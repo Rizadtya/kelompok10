@@ -11,9 +11,13 @@ import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { getProviders, providerStatus } from './providers/index.js';
-import { buildBrief } from './brief.js';
-import { uid } from './util.js';
+import { providerStatus } from './providers/index.js';
+import {
+  analyzeHandler,
+  recommendHandler,
+  explainHandler,
+  generateHandler,
+} from './handlers.js';
 
 // --- tiny .env loader (no dependency) --------------------------------------
 loadDotEnv();
@@ -40,41 +44,11 @@ const server = http.createServer(async (req, res) => {
 
     if (req.method === 'POST' && url.startsWith('/api/')) {
       const body = await readBody(req);
-      const providers = getProviders();
 
-      if (url === '/api/analyze') {
-        const analysis = await providers.vision.analyzeVehicle(body);
-        return end(res, 200, { analysis: normalizeAnalysis(analysis) });
-      }
-      if (url === '/api/recommend') {
-        const recommendations = await providers.text.recommend(body);
-        return end(res, 200, { recommendations });
-      }
-      if (url === '/api/explain') {
-        const explanation = await providers.text.explain(body);
-        return end(res, 200, { explanation });
-      }
-      if (url === '/api/generate') {
-        const brief = buildBrief(body);
-        const result = await providers.image.generateImage({
-          brief,
-          imageDataUrl: body.imageDataUrl || null,
-        });
-        const concept = {
-          id: uid('concept'),
-          imageUrl: result.imageUrl ?? null,
-          prompt: result.prompt || brief,
-          settings: {
-            theme: body?.theme?.primary || '',
-            use: body?.preferences?.intendedUse || '',
-            provider: providers.image.name,
-          },
-          createdAt: new Date().toISOString(),
-          isFallback: Boolean(result.isFallback),
-          note: result.note,
-        };
-        return end(res, 200, { concept });
-      }
+      if (url === '/api/analyze') return end(res, 200, await analyzeHandler(body));
+      if (url === '/api/recommend') return end(res, 200, await recommendHandler(body));
+      if (url === '/api/explain') return end(res, 200, await explainHandler(body));
+      if (url === '/api/generate') return end(res, 200, await generateHandler(body));
     }
 
     return end(res, 404, { error: 'Not found' });
@@ -125,23 +99,6 @@ function readBody(req) {
     });
     req.on('error', reject);
   });
-}
-
-/** Guard against malformed provider output so the UI never breaks. */
-function normalizeAnalysis(a) {
-  const arr = (v) => (Array.isArray(v) ? v : v ? [String(v)] : []);
-  return {
-    identification: a?.identification || 'Unidentified vehicle',
-    confidence: typeof a?.confidence === 'number' ? Math.max(0, Math.min(1, a.confidence)) : 0.4,
-    bodyStyle: a?.bodyStyle || '',
-    characteristics: arr(a?.characteristics),
-    existingMods: arr(a?.existingMods),
-    recommendedDirections: arr(a?.recommendedDirections),
-    compatibility: arr(a?.compatibility),
-    constraints: arr(a?.constraints),
-    needsUserInput: Boolean(a?.needsUserInput),
-    notes: a?.notes || '',
-  };
 }
 
 function loadDotEnv() {

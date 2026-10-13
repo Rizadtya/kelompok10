@@ -16,3 +16,6 @@ dist-ssr
 # Emitted output from vite.config.ts (source of truth is the .ts file)
 vite.config.d.ts
 vite.config.js
+
+# Vercel
+.vercel

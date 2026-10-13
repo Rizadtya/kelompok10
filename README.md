@@ -61,25 +61,73 @@ proxies `/api/*` to the server on port 8787.
 > Note: start the server and dev server in separate terminals. On Windows
 > PowerShell, run each command in its own window.
 
-## Connecting a real AI provider
+## Connecting a real AI provider (Google Gemini)
 
-The app runs fully in **mock mode** with no setup. To enable real AI:
+The app runs fully in **mock mode** with no setup. To enable real AI with
+Gemini (text + vision):
+
+### 1. Get a Gemini API key
+
+1. Open **https://aistudio.google.com/apikey** and sign in with a Google account.
+2. Click **Create API key** (there is a free tier).
+3. Copy the key — treat it like a password.
+
+### 2. Local development
 
 1. Copy `.env.example` to `.env`.
-2. Set the providers you want and add credentials. Example (OpenAI):
+2. Set:
 
    ```env
-   AI_TEXT_PROVIDER=openai
-   AI_VISION_PROVIDER=openai
-   AI_IMAGE_PROVIDER=openai
-   OPENAI_API_KEY=sk-...
+   AI_TEXT_PROVIDER=gemini
+   AI_VISION_PROVIDER=gemini
+   AI_IMAGE_PROVIDER=mock
+   GEMINI_API_KEY=your_key_here
    ```
 
-3. Restart `npm run server`.
+3. Restart `npm run server`. The top bar should switch from "Mock mode" to
+   "AI connected".
 
-Any OpenAI-compatible endpoint works via `AI_BASE_URL` and `AI_API_KEY`.
+> Gemini has no image *generation* on this REST surface, so keep
+> `AI_IMAGE_PROVIDER=mock`. Analysis, recommendations, and explanation all use
+> Gemini; the visual concept uses the honest configuration-based fallback.
 
-**Credentials never reach the browser** — they are read only in `server/`.
+### 3. Deploy to Vercel (key stays secret)
+
+The repo includes `vercel.json` and serverless functions in `api/` that reuse
+the exact same handler code as the local server.
+
+1. Push this repo to GitHub (already done).
+2. On **vercel.com** → **Add New → Project** → import your GitHub repo.
+3. Vercel auto-detects Vite. Leave the defaults (build `npm run build`,
+   output `dist`).
+4. Before deploying, open **Settings → Environment Variables** and add:
+
+   | Name | Value |
+   |---|---|
+   | `AI_TEXT_PROVIDER` | `gemini` |
+   | `AI_VISION_PROVIDER` | `gemini` |
+   | `AI_IMAGE_PROVIDER` | `mock` |
+   | `GEMINI_API_KEY` | *your key* |
+
+5. Click **Deploy**. Your app is live; `/api/*` runs as serverless functions.
+
+To update later: `git push` → Vercel redeploys automatically.
+
+### Security model (how the key stays safe)
+
+- The key is read **only** on the server — in `server/providers/gemini.js` and
+  the `api/` functions — via `process.env`. It is **never** imported into any
+  file under `src/`, so it never enters the browser bundle.
+- `.env` is listed in `.gitignore` (along with `.env.*`), so your real key is
+  **never committed**, even if the GitHub repo is public. Only `.env.example`
+  (with blank values) is committed.
+- On Vercel the key lives in encrypted **Environment Variables**, not in git.
+- The key is sent to Google via an HTTPS request header and is not written to
+  logs or returned in error messages.
+- The browser only ever talks to your own `/api/*` endpoints — it never calls
+  Google directly and never sees the key.
+
+> If a key is ever exposed, revoke it in Google AI Studio and generate a new one.
 
 ### A note on PartyRock
 
