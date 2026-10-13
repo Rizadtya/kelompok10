@@ -12,12 +12,14 @@ import { mockProvider } from './mock.js';
 import { openaiProvider } from './openai.js';
 import { geminiProvider } from './gemini.js';
 
-function hasOpenAIKey() {
-  return Boolean(process.env.OPENAI_API_KEY || process.env.AI_API_KEY);
+function hasGeminiKey() {
+  return (process.env.GEMINI_API_KEY_POOL || '')
+    .split(/[,\n]/)
+    .some((k) => k.trim().length > 0);
 }
 
-function hasGeminiKey() {
-  return Boolean(process.env.GEMINI_API_KEY);
+function hasOpenAIKey() {
+  return Boolean(process.env.OPENAI_API_KEY || process.env.AI_API_KEY);
 }
 
 function resolve(kind) {

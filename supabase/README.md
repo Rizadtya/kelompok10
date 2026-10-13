@@ -27,5 +27,5 @@
 - **Row Level Security (RLS) is enabled** on both tables. This is why the
   public `anon` key is safe in the browser: even with the key, a user can only
   touch rows where `auth.uid()` matches their own id.
-- The `service_role` key (server-only, in `.env.local` / Vercel env vars)
+- The `service_role` key (server-only, in `.env` / Vercel env vars)
   bypasses RLS — never expose it to the browser.

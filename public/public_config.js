@@ -11,7 +11,7 @@
  * WHAT MUST **NEVER** GO HERE:
  *     - SUPABASE_SERVICE_ROLE_KEY   (secret — bypasses all security)
  *     - GEMINI_API_KEY              (secret)
- *   Put those in `.env.local` (local) and Vercel Environment Variables (prod).
+ *   Put those in `.env` (local) and Vercel Environment Variables (prod).
  *
  * This file is loaded by index.html BEFORE the app, and the app reads the
  * values from `window.__PUBLIC_CONFIG__`.
