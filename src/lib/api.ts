@@ -6,6 +6,7 @@ import type {
   Recommendations,
   VehicleAnalysis,
 } from '../types';
+import { supabase } from './supabaseClient';
 
 // ---------------------------------------------------------------------------
 // Front-end API client. All AI calls are proxied to the server layer, which
@@ -23,12 +24,27 @@ export class ApiError extends Error {
   }
 }
 
+/** Attach the logged-in user's access token so protected endpoints accept the call. */
+async function authHeaders(): Promise<Record<string, string>> {
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  try {
+    if (supabase) {
+      const { data } = await supabase.auth.getSession();
+      const token = data.session?.access_token;
+      if (token) headers.Authorization = `Bearer ${token}`;
+    }
+  } catch {
+    /* no session — request proceeds unauthenticated (server decides) */
+  }
+  return headers;
+}
+
 async function post<T>(path: string, body: unknown): Promise<T> {
   let res: Response;
   try {
     res = await fetch(path, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: await authHeaders(),
       body: JSON.stringify(body),
     });
   } catch {

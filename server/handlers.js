@@ -9,6 +9,7 @@
 // ---------------------------------------------------------------------------
 
 import { getProviders, providerStatus } from './providers/index.js';
+import { mockProvider } from './providers/mock.js';
 import { buildBrief } from './brief.js';
 import { uid } from './util.js';
 
@@ -16,21 +17,35 @@ export function statusHandler() {
   return providerStatus();
 }
 
-export async function analyzeHandler(body) {
+/**
+ * Run a provider method, but if the configured provider throws (e.g. Gemini is
+ * briefly overloaded, rate-limited, or misconfigured), fall back to the mock
+ * provider so the user always receives a usable result instead of an error.
+ */
+async function withFallback(method, body) {
   const providers = getProviders();
-  const analysis = await providers.vision.analyzeVehicle(body || {});
+  const primary = method === 'analyzeVehicle' ? providers.vision : providers.text;
+  try {
+    return await primary[method](body || {});
+  } catch (err) {
+    if (primary === mockProvider) throw err; // mock itself failed — surface it
+    console.error(`[ai] ${primary.name}.${method} failed, using mock fallback:`, err?.message);
+    return mockProvider[method](body || {});
+  }
+}
+
+export async function analyzeHandler(body) {
+  const analysis = await withFallback('analyzeVehicle', body);
   return { analysis: normalizeAnalysis(analysis) };
 }
 
 export async function recommendHandler(body) {
-  const providers = getProviders();
-  const recommendations = await providers.text.recommend(body || {});
+  const recommendations = await withFallback('recommend', body);
   return { recommendations };
 }
 
 export async function explainHandler(body) {
-  const providers = getProviders();
-  const explanation = await providers.text.explain(body || {});
+  const explanation = await withFallback('explain', body);
   return { explanation };
 }
 

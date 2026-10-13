@@ -18,6 +18,10 @@ import {
   explainHandler,
   generateHandler,
 } from './handlers.js';
+import { verifyAccessToken, getBearerToken, hasAnonKey } from './supabaseAdmin.js';
+
+// Routes that require a signed-in user when Supabase auth is configured.
+const PROTECTED = new Set(['/api/analyze', '/api/recommend', '/api/explain', '/api/generate']);
 
 // --- tiny .env loader (no dependency) --------------------------------------
 loadDotEnv();
@@ -29,7 +33,7 @@ const server = http.createServer(async (req, res) => {
   // CORS (handy if the client runs on a different origin without the proxy).
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
   if (req.method === 'OPTIONS') return end(res, 204, {});
 
   const url = (req.url || '').split('?')[0];
@@ -43,6 +47,15 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (req.method === 'POST' && url.startsWith('/api/')) {
+      // Enforce auth on protected routes when Supabase is configured. Mirrors
+      // the Vercel serverless guard so local and prod behave identically.
+      if (PROTECTED.has(url) && hasAnonKey()) {
+        const user = await verifyAccessToken(getBearerToken(req));
+        if (!user) {
+          return end(res, 401, { error: 'You must be signed in to use this feature.' });
+        }
+      }
+
       const body = await readBody(req);
 
       if (url === '/api/analyze') return end(res, 200, await analyzeHandler(body));
@@ -102,9 +115,16 @@ function readBody(req) {
 }
 
 function loadDotEnv() {
+  const __dirname = path.dirname(fileURLToPath(import.meta.url));
+  const root = path.resolve(__dirname, '..');
+  // Later files take precedence (.env.local overrides .env), matching Vite.
+  for (const file of ['.env', '.env.local']) {
+    parseEnvFile(path.resolve(root, file));
+  }
+}
+
+function parseEnvFile(envPath) {
   try {
-    const __dirname = path.dirname(fileURLToPath(import.meta.url));
-    const envPath = path.resolve(__dirname, '..', '.env');
     if (!fs.existsSync(envPath)) return;
     const content = fs.readFileSync(envPath, 'utf8');
     for (const line of content.split('\n')) {
@@ -120,7 +140,11 @@ function loadDotEnv() {
       ) {
         value = value.slice(1, -1);
       }
-      if (!(key in process.env)) process.env[key] = value;
+      // .env.local overrides earlier values; both override nothing already in
+      // the real environment (e.g. Vercel-injected vars).
+      if (!(key in process.env) || envPath.endsWith('.env.local')) {
+        process.env[key] = value;
+      }
     }
   } catch {
     /* non-fatal */

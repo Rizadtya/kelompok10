@@ -1,8 +1,9 @@
 import { useEffect, useState } from 'react';
-import { Menu, PanelRightOpen, RotateCcw, Cpu, CheckCircle2, AlertCircle } from 'lucide-react';
+import { Menu, PanelRightOpen, RotateCcw, Cpu, CheckCircle2, AlertCircle, LogOut } from 'lucide-react';
 import { api } from '../../lib/api';
 import { Tooltip } from '../ui/Tooltip';
 import type { ProviderStatus } from '../../types';
+import { useAuth } from '../../state/AuthContext';
 
 export function TopBar({
   onToggleSidebar,
@@ -15,6 +16,7 @@ export function TopBar({
 }) {
   const [status, setStatus] = useState<ProviderStatus | null>(null);
   const [offline, setOffline] = useState(false);
+  const { configured: authConfigured, user, signOut } = useAuth();
 
   useEffect(() => {
     api
@@ -46,6 +48,19 @@ export function TopBar({
             <PanelRightOpen className="h-4 w-4" />
           </button>
         </Tooltip>
+
+        {authConfigured && user && (
+          <>
+            <span className="hidden max-w-[160px] truncate text-xs text-gray-400 sm:inline" title={user.email ?? ''}>
+              {user.email}
+            </span>
+            <Tooltip label="Sign out" side="bottom">
+              <button className="btn-ghost p-2" onClick={() => void signOut()} aria-label="Sign out">
+                <LogOut className="h-4 w-4" />
+              </button>
+            </Tooltip>
+          </>
+        )}
       </div>
     </header>
   );

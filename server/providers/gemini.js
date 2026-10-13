@@ -20,9 +20,19 @@ function cfg() {
   return {
     baseUrl: process.env.GEMINI_BASE_URL || DEFAULT_BASE,
     apiKey: process.env.GEMINI_API_KEY || '',
-    textModel: process.env.GEMINI_TEXT_MODEL || 'gemini-2.5-flash',
-    visionModel: process.env.GEMINI_VISION_MODEL || 'gemini-2.5-flash',
+    textModel: process.env.GEMINI_TEXT_MODEL || DEFAULT_MODEL,
+    visionModel: process.env.GEMINI_VISION_MODEL || DEFAULT_MODEL,
   };
+}
+
+// Primary model, then fallbacks tried in order if one is overloaded (503) or
+// unavailable (404). Keeps the app responsive when a specific model is busy.
+const DEFAULT_MODEL = 'gemini-3.5-flash';
+const MODEL_FALLBACKS = ['gemini-3.5-flash', 'gemini-flash-latest', 'gemini-2.5-flash', 'gemini-3.8-flash'];
+
+function modelChain(preferred) {
+  // Preferred first, then the rest (de-duplicated).
+  return [preferred, ...MODEL_FALLBACKS].filter((m, i, a) => m && a.indexOf(m) === i);
 }
 
 const SYSTEM = `You are an expert automotive design consultant. Respond ONLY with a valid JSON object matching the requested schema — no markdown, no prose outside the JSON. Never invent exact market prices; use null for costEstimate unless you have reliable regional data. Never claim parts are compatible without evidence — frame compatibility as "verify" guidance. Clearly separate visual estimates from the specifications the user provided.`;
@@ -34,32 +44,66 @@ const SYSTEM = `You are an expert automotive design consultant. Respond ONLY wit
 async function generateJSON(parts, { useVision } = {}) {
   const c = cfg();
   if (!c.apiKey) throw new Error('GEMINI_API_KEY is not configured on the server.');
-  const model = useVision ? c.visionModel : c.textModel;
+  const preferred = useVision ? c.visionModel : c.textModel;
 
-  const res = await fetch(
-    `${c.baseUrl}/models/${encodeURIComponent(model)}:generateContent`,
-    {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        // Key sent via header (preferred over query string so it never lands in logs).
-        'x-goog-api-key': c.apiKey,
-      },
-      body: JSON.stringify({
-        systemInstruction: { parts: [{ text: SYSTEM }] },
-        contents: [{ role: 'user', parts }],
-        generationConfig: {
-          temperature: 0.7,
-          responseMimeType: 'application/json',
-        },
-      }),
+  const body = JSON.stringify({
+    systemInstruction: { parts: [{ text: SYSTEM }] },
+    contents: [{ role: 'user', parts }],
+    generationConfig: {
+      temperature: 0.7,
+      responseMimeType: 'application/json',
     },
-  );
+  });
 
-  if (!res.ok) {
-    const text = await res.text();
-    // Avoid leaking the key; only surface status + a short, safe snippet.
-    throw new Error(`Gemini error (${res.status}): ${text.slice(0, 300)}`);
+  // Transient = retry same model; 404 = model gone, move to next in the chain.
+  const TRANSIENT = new Set([429, 500, 503]);
+  const RETRIES_PER_MODEL = 2;
+  let res = null;
+  let lastErrStatus = 0;
+  let lastErrText = '';
+
+  // Per-request timeout so a slow/overloaded model never hangs the response
+  // (critical for Vercel's function duration limit and for UX).
+  const REQUEST_TIMEOUT_MS = Number(process.env.GEMINI_TIMEOUT_MS) || 20000;
+
+  outer: for (const model of modelChain(preferred)) {
+    for (let attempt = 1; attempt <= RETRIES_PER_MODEL; attempt++) {
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), REQUEST_TIMEOUT_MS);
+      try {
+        res = await fetch(`${c.baseUrl}/models/${encodeURIComponent(model)}:generateContent`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            // Key sent via header (preferred over query string so it never lands in logs).
+            'x-goog-api-key': c.apiKey,
+          },
+          body,
+          signal: ctrl.signal,
+        });
+      } catch (err) {
+        // Timed out or network error — treat like a transient failure.
+        clearTimeout(timer);
+        lastErrStatus = 408;
+        lastErrText = err?.name === 'AbortError' ? 'request timed out' : String(err?.message || err);
+        if (attempt < RETRIES_PER_MODEL) {
+          await new Promise((r) => setTimeout(r, 400));
+          continue;
+        }
+        break; // move to next model in the chain
+      }
+      clearTimeout(timer);
+      if (res.ok) break outer;
+      lastErrStatus = res.status;
+      lastErrText = (await res.text()).slice(0, 200);
+      if (res.status === 404) break; // model unavailable — try next model
+      if (!TRANSIENT.has(res.status)) break outer; // non-retryable (e.g. 400/401/403)
+      await new Promise((r) => setTimeout(r, 500 * attempt)); // backoff then retry
+    }
+  }
+
+  if (!res || !res.ok) {
+    throw new Error(`Gemini error (${lastErrStatus}): ${lastErrText}`);
   }
 
   const data = await res.json();
