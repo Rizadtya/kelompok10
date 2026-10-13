@@ -13,8 +13,8 @@ production-style platform.
 - **Tailwind CSS** — dark charcoal / neon-lime design system
 - **lucide-react** — icons
 - **Node (built-in `http`)** — dependency-free server layer for AI calls
-- **Provider abstraction** — swap in OpenAI-compatible providers for text,
-  vision, and image generation
+- **Provider abstraction** — swap in Gemini or OpenAI-compatible providers for
+  text, vision, and image generation
 
 ## Project structure
 
@@ -61,6 +61,19 @@ proxies `/api/*` to the server on port 8787.
 > Note: start the server and dev server in separate terminals. On Windows
 > PowerShell, run each command in its own window.
 
+## Configuration
+
+Copy the template and fill in your values:
+
+```bash
+cp .env.example .env.local
+```
+
+> Confirm which file the server loads (`.env` or `.env.local`) and keep this
+> line accurate. The server only reads the file it is configured to load.
+
+`.env.local` is gitignored. Never commit real keys.
+
 ## Connecting a real AI provider (Google Gemini)
 
 The app runs fully in **mock mode** with no setup. To enable real AI with
@@ -74,18 +87,34 @@ Gemini (text + vision):
 
 ### 2. Local development
 
-1. Copy `.env.example` to `.env`.
-2. Set:
+1. Set the following in your local env file:
 
-   ```env
+```env
    AI_TEXT_PROVIDER=gemini
    AI_VISION_PROVIDER=gemini
    AI_IMAGE_PROVIDER=mock
-   GEMINI_API_KEY=your_key_here
-   ```
+   GEMINI_API_KEY_POOL=your_key_here
+```
 
-3. Restart `npm run server`. The top bar should switch from "Mock mode" to
+2. Restart `npm run server`. The top bar should switch from "Mock mode" to
    "AI connected".
+
+#### Using multiple keys (optional)
+
+`GEMINI_API_KEY_POOL` accepts one or more keys, separated by commas or newlines:
+
+```env
+GEMINI_API_KEY_POOL=key_one,key_two,key_three
+```
+
+- A single key is fine.
+- If a key is invalid, out of quota, or rate-limited (401/403/429), the server
+  moves on to the next key in the pool.
+- The starting key rotates round-robin across requests, so load spreads across
+  the pool.
+- Rotation state is in memory. On Vercel it resets on cold starts and is not
+  shared across instances, so treat it as best-effort load spreading, not a
+  strict guarantee.
 
 > Gemini has no image *generation* on this REST surface, so keep
 > `AI_IMAGE_PROVIDER=mock`. Analysis, recommendations, and explanation all use
@@ -96,7 +125,7 @@ Gemini (text + vision):
 The repo includes `vercel.json` and serverless functions in `api/` that reuse
 the exact same handler code as the local server.
 
-1. Push this repo to GitHub (already done).
+1. Push this repo to GitHub.
 2. On **vercel.com** → **Add New → Project** → import your GitHub repo.
 3. Vercel auto-detects Vite. Leave the defaults (build `npm run build`,
    output `dist`).
@@ -107,33 +136,57 @@ the exact same handler code as the local server.
    | `AI_TEXT_PROVIDER` | `gemini` |
    | `AI_VISION_PROVIDER` | `gemini` |
    | `AI_IMAGE_PROVIDER` | `mock` |
-   | `GEMINI_API_KEY` | *your key* |
+   | `GEMINI_API_KEY_POOL` | *your key(s), comma-separated* |
 
 5. Click **Deploy**. Your app is live; `/api/*` runs as serverless functions.
 
 To update later: `git push` → Vercel redeploys automatically.
 
-### Security model (how the key stays safe)
+### Security model (how the keys stay safe)
 
-- The key is read **only** on the server — in `server/providers/gemini.js` and
-  the `api/` functions — via `process.env`. It is **never** imported into any
-  file under `src/`, so it never enters the browser bundle.
-- `.env` is listed in `.gitignore` (along with `.env.*`), so your real key is
-  **never committed**, even if the GitHub repo is public. Only `.env.example`
-  (with blank values) is committed.
-- On Vercel the key lives in encrypted **Environment Variables**, not in git.
-- The key is sent to Google via an HTTPS request header and is not written to
-  logs or returned in error messages.
+- Keys are read **only** on the server — in `server/providers/gemini.js` and
+  the `api/` functions — via `process.env`. They are **never** imported into
+  any file under `src/`, so they never enter the browser bundle.
+- `.env*` files are listed in `.gitignore`, so real keys are **never
+  committed**, even if the GitHub repo is public. Only `.env.example` (with
+  blank values) is committed.
+- On Vercel the keys live in encrypted **Environment Variables**, not in git.
+- Keys are sent to Google via an HTTPS request header and are not written to
+  logs. Only a masked form (e.g. `AIza...abcd`) appears in warnings.
 - The browser only ever talks to your own `/api/*` endpoints — it never calls
-  Google directly and never sees the key.
+  Google directly and never sees the keys.
 
 > If a key is ever exposed, revoke it in Google AI Studio and generate a new one.
 
-### A note on PartyRock
+## Optional: OpenAI
 
-Access to the reference PartyRock app does **not** grant API access to its
-underlying models. Integrate only through supported provider APIs with your own
-credentials.
+OpenAI is an alternative provider for text, vision, and image generation.
+Set a provider variable to `openai` and add the key:
+
+```env
+AI_TEXT_PROVIDER=openai
+AI_VISION_PROVIDER=openai
+AI_IMAGE_PROVIDER=openai
+OPENAI_API_KEY=your_key_here
+OPENAI_TEXT_MODEL=gpt-4o-mini
+OPENAI_VISION_MODEL=gpt-4o-mini
+OPENAI_IMAGE_MODEL=gpt-image-1
+```
+
+> Verify these model names against OpenAI's current model list before release.
+> Note: the `custom` provider path currently checks `AI_API_KEY`, but the
+> OpenAI provider reads `OPENAI_API_KEY`. Confirm they match before documenting
+> the generic provider.
+
+## Optional: Supabase (auth)
+
+> Fill this section in once the auth flow is confirmed. Suggested content:
+
+- `SUPABASE_URL` and `SUPABASE_ANON_KEY` are public. They also go in
+  `public/public_config.js` for the browser.
+- `SUPABASE_SERVICE_ROLE_KEY` is secret. It is used only on the server
+  (`.env.local` locally, Environment Variables on Vercel) and must never go
+  into `public_config.js` or any `src/` file.
 
 ## How the AI is used
 

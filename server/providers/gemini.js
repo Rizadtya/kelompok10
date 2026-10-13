@@ -16,10 +16,28 @@
 
 const DEFAULT_BASE = 'https://generativelanguage.googleapis.com/v1beta';
 
+function parseKeyPool() {
+  const pool = process.env.GEMINI_API_KEY_POOL || '';
+  const keys = pool
+    .split(/[,\n]/)
+    .map((k) => k.trim())
+    .filter(Boolean);
+  return [...new Set(keys)];
+}
+
+let rrCursor = 0;
+
+function roundRobinOrder(keys) {
+  if (keys.length <= 1) return keys;
+  const start = rrCursor % keys.length;
+  rrCursor = (rrCursor + 1) % keys.length;
+  return [...keys.slice(start), ...keys.slice(0, start)];
+}
+
 function cfg() {
   return {
     baseUrl: process.env.GEMINI_BASE_URL || DEFAULT_BASE,
-    apiKey: process.env.GEMINI_API_KEY || '',
+    apiKeys: parseKeyPool(),
     textModel: process.env.GEMINI_TEXT_MODEL || DEFAULT_MODEL,
     visionModel: process.env.GEMINI_VISION_MODEL || DEFAULT_MODEL,
   };
@@ -35,6 +53,11 @@ function modelChain(preferred) {
   return [preferred, ...MODEL_FALLBACKS].filter((m, i, a) => m && a.indexOf(m) === i);
 }
 
+function maskKey(key) {
+  if (!key) return '(empty)';
+  return key.length <= 8 ? '****' : `${key.slice(0, 4)}...${key.slice(-4)}`;
+}
+
 const SYSTEM = `You are an expert automotive design consultant. Respond ONLY with a valid JSON object matching the requested schema — no markdown, no prose outside the JSON. Never invent exact market prices; use null for costEstimate unless you have reliable regional data. Never claim parts are compatible without evidence — frame compatibility as "verify" guidance. Clearly separate visual estimates from the specifications the user provided.`;
 
 /**
@@ -43,8 +66,12 @@ const SYSTEM = `You are an expert automotive design consultant. Respond ONLY wit
  */
 async function generateJSON(parts, { useVision } = {}) {
   const c = cfg();
-  if (!c.apiKey) throw new Error('GEMINI_API_KEY is not configured on the server.');
+  if (c.apiKeys.length === 0) {
+    throw new Error('No Gemini API key configured. Set GEMINI_API_KEY_POOL on the server (one key is fine).');
+  }
+
   const preferred = useVision ? c.visionModel : c.textModel;
+  const orderedKeys = roundRobinOrder(c.apiKeys);
 
   const body = JSON.stringify({
     systemInstruction: { parts: [{ text: SYSTEM }] },
@@ -55,9 +82,10 @@ async function generateJSON(parts, { useVision } = {}) {
     },
   });
 
-  // Transient = retry same model; 404 = model gone, move to next in the chain.
-  const TRANSIENT = new Set([429, 500, 503]);
-  const RETRIES_PER_MODEL = 2;
+  const KEY_EXHAUSTED = new Set([401, 403, 429]);
+  const MODEL_TRANSIENT = new Set([500, 503]);
+  const RETRIES_PER_KEY = 2;
+
   let res = null;
   let lastErrStatus = 0;
   let lastErrText = '';
@@ -67,43 +95,55 @@ async function generateJSON(parts, { useVision } = {}) {
   const REQUEST_TIMEOUT_MS = Number(process.env.GEMINI_TIMEOUT_MS) || 20000;
 
   outer: for (const model of modelChain(preferred)) {
-    for (let attempt = 1; attempt <= RETRIES_PER_MODEL; attempt++) {
-      const ctrl = new AbortController();
-      const timer = setTimeout(() => ctrl.abort(), REQUEST_TIMEOUT_MS);
-      try {
-        res = await fetch(`${c.baseUrl}/models/${encodeURIComponent(model)}:generateContent`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            // Key sent via header (preferred over query string so it never lands in logs).
-            'x-goog-api-key': c.apiKey,
-          },
-          body,
-          signal: ctrl.signal,
-        });
-      } catch (err) {
-        // Timed out or network error — treat like a transient failure.
-        clearTimeout(timer);
-        lastErrStatus = 408;
-        lastErrText = err?.name === 'AbortError' ? 'request timed out' : String(err?.message || err);
-        if (attempt < RETRIES_PER_MODEL) {
-          await new Promise((r) => setTimeout(r, 400));
-          continue;
+    for (const apiKey of orderedKeys) {
+      for (let attempt = 1; attempt <= RETRIES_PER_KEY; attempt++) {
+        const ctrl = new AbortController();
+        const timer = setTimeout(() => ctrl.abort(), REQUEST_TIMEOUT_MS);
+
+        try {
+          res = await fetch(`${c.baseUrl}/models/${encodeURIComponent(model)}:generateContent`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'x-goog-api-key': apiKey,
+            },
+            body,
+            signal: ctrl.signal,
+          });
+        } catch (err) {
+          clearTimeout(timer);
+          lastErrStatus = 408;
+          lastErrText = err?.name === 'AbortError' ? 'request timed out' : String(err?.message || err);
+          if (attempt < RETRIES_PER_KEY) {
+            await new Promise((r) => setTimeout(r, 400));
+            continue;
+          }
+          break;
         }
-        break; // move to next model in the chain
+
+        clearTimeout(timer);
+        if (res.ok) break outer;
+
+        lastErrStatus = res.status;
+        lastErrText = (await res.text()).slice(0, 200);
+
+        if (res.status === 404) break outer;
+
+        if (KEY_EXHAUSTED.has(res.status)) {
+          console.warn(`[gemini] key ${maskKey(apiKey)} failed (${res.status}) on ${model}, trying next key in pool`);
+          break;
+        }
+
+        if (!MODEL_TRANSIENT.has(res.status)) break outer;
+        await new Promise((r) => setTimeout(r, 500 * attempt));
       }
-      clearTimeout(timer);
-      if (res.ok) break outer;
-      lastErrStatus = res.status;
-      lastErrText = (await res.text()).slice(0, 200);
-      if (res.status === 404) break; // model unavailable — try next model
-      if (!TRANSIENT.has(res.status)) break outer; // non-retryable (e.g. 400/401/403)
-      await new Promise((r) => setTimeout(r, 500 * attempt)); // backoff then retry
     }
   }
 
   if (!res || !res.ok) {
-    throw new Error(`Gemini error (${lastErrStatus}): ${lastErrText}`);
+    throw new Error(
+      `Gemini error (${lastErrStatus}) after trying ${orderedKeys.length} key(s) in the pool: ${lastErrText}`
+    );
   }
 
   const data = await res.json();

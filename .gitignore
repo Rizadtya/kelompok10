@@ -5,11 +5,7 @@ dist-ssr
 # --- Secrets: NEVER commit real env files -----------------------------------
 .env
 .env.*
-# ...but DO commit the example/template files (no real secrets in them):
 !.env.example
-!.env.local.example
-# Explicitly keep the real secret file out, no matter what:
-.env.local
 
 .DS_Store
 *.log
